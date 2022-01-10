@@ -1,6 +1,7 @@
 import torch
 import logging
 import numpy as np
+import math
 from tqdm import tqdm
 from torch import nn
 from torch.autograd import grad
@@ -41,7 +42,6 @@ def J_hat(sample: torch.Tensor, output: torch.Tensor) -> float:
     return 1/2 * (score * score).sum() + trace
     
 def approx_jacobian_trace(fx, x):
-
     eps = torch.randn_like(fx)
     eps_dfdx = keep_grad(fx, x, grad_outputs=eps)
     tr_dfdx = (eps_dfdx * eps).sum(-1)
@@ -57,20 +57,42 @@ def keep_grad(output, input, grad_outputs=None):
     return torch.autograd.grad(output, input, grad_outputs=grad_outputs, retain_graph=True, create_graph=True)[0]
 
 
-def train(model, distr, optimiser, training):
+def train(model, optimiser, training, testing, cov, mean):
     training.requires_grad = True
-    for epoch in tqdm(range(10)):
+    for epoch in tqdm(range(5)):
         optimiser.zero_grad()
-        
-        outputs = model(training)
         loss = 0
-        for output, input in zip(outputs, training):
+        actual_score = 0
+        for input in tqdm(training):
+            output = model(input)
             loss += sliced_J_hat(output[0], input)
         loss /= len(training)
 
+        logging.info(loss)
         loss.backward()
         optimiser.step()
+        test(model, testing, cov, mean)
     
+def test(model, testing, cov, mean):
+    '''compute avg distance between h(x;theta) and empirical log pdf function'''
+    avg_pdf_diff = 0
+    avg_score_diff = 0
+    for input in tqdm(testing):
+        output = model(input)
+        nn_score = grad(output, input)
+        avg_score_diff += abs((nn_score - empirical_score(input, cov, mean)).sum())
+        avg_pdf_diff += abs(output - math.log(empirical_pdf(input, cov, mean)))
+    avg_pdf_diff /= len(testing)
+    logging.info(avg_pdf_diff)
+    logging.info(avg_score_diff)
+
+def empirical_pdf(x, cov, mean):
+    Z_theta = math.sqrt(torch.det(2*math.pi*cov))
+    q_x = math.exp(-1/2 * torch.matmul(torch.matmul(x-mean, cov), x-mean))
+    return q_x / Z_theta
+
+def empirical_score(x, cov, mean):
+    return torch.matmul(-cov, (x-mean))
 
 def write_samples(distribution, train_size=10000, test_size=1000):
     training = distribution.rsample((1, train_size))[0]
@@ -88,25 +110,19 @@ def get_samples():
 def main():
     logging.basicConfig(filename='app.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-    mean = torch.Tensor([1, 2, 3])
-    cov = torch.Tensor([[1, 1, 1], [1, 2, 2], [1, 2, 3]])
+    mean = torch.Tensor([1, 1, 1])
+    cov = torch.Tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
     distr = MultivariateNormal(loc=mean, covariance_matrix=cov)
-
+    write_samples(distr)
     training, testing = get_samples()
 
     model = SM()
-    optimiser = Adam(model.parameters(), lr = 0.9)
+    optimiser = Adam(model.parameters(), lr = 0.75)
     
-    train(model, distr, optimiser, training)
-    
+    # print(sliced_J_hat(output, training[0]))
 
-    # output = model(sample)[0]
-    # logging.info(output)
-    # score = keep_grad(output, sample)
-    # logging.info(score)
-    # trace = approx_jacobian_trace(score, sample)
-    # logging.info(trace)
-    # # logging.info(J_hat(sample, output))
+    train(model, optimiser, training, testing, cov, mean)
+    torch.save(model.state_dict(), 'model/save.txt')
     
 
 if __name__ == '__main__':
