@@ -28,10 +28,6 @@ class SM(nn.Module):
     def forward(self, x):
         return self.network(x)
 
-    def get_grads(self):
-        pass
-        
-
 def J_hat(sample: torch.Tensor, output: torch.Tensor) -> float:
     score = grad(output, sample, create_graph=True, retain_graph=True)[0]
     logging.info(score)
@@ -46,31 +42,32 @@ def approx_jacobian_trace(fx, x):
     eps_dfdx = keep_grad(fx, x, grad_outputs=eps)
     tr_dfdx = (eps_dfdx * eps).sum(-1)
 
-    return tr_dfdx
+    return tr_dfdx, eps
 
 def sliced_J_hat(output, sample):
     score = keep_grad(output, sample)
-    trace = approx_jacobian_trace(score, sample)
-    return 1/2 * (score * score).sum() + trace
+    trace, eps = approx_jacobian_trace(score, sample)
+    return 1/2 * ((eps * score).sum()) ** 2 + trace
 
 def keep_grad(output, input, grad_outputs=None):
     return torch.autograd.grad(output, input, grad_outputs=grad_outputs, retain_graph=True, create_graph=True)[0]
 
 
-def train(model, optimiser, training, testing, cov, mean):
+def train(model, optimiser, training, testing, cov, mean, n_epoch=5):
     training.requires_grad = True
-    for epoch in tqdm(range(5)):
+    for epoch in tqdm(range(n_epoch)):
         optimiser.zero_grad()
         loss = 0
-        actual_score = 0
+
         for input in tqdm(training):
             output = model(input)
             loss += sliced_J_hat(output[0], input)
         loss /= len(training)
 
-        logging.info(loss)
+        logging.info(f'loss: {loss}')
         loss.backward()
         optimiser.step()
+
         test(model, testing, cov, mean)
     
 def test(model, testing, cov, mean):
@@ -79,12 +76,13 @@ def test(model, testing, cov, mean):
     avg_score_diff = 0
     for input in tqdm(testing):
         output = model(input)
-        nn_score = grad(output, input)
+        nn_score = keep_grad(output, input)
         avg_score_diff += abs((nn_score - empirical_score(input, cov, mean)).sum())
         avg_pdf_diff += abs(output - math.log(empirical_pdf(input, cov, mean)))
     avg_pdf_diff /= len(testing)
-    logging.info(avg_pdf_diff)
-    logging.info(avg_score_diff)
+    avg_score_diff /= len(testing)
+    logging.info(f'pdf diff: {avg_pdf_diff}')
+    logging.info(f'score diff: {avg_score_diff}')
 
 def empirical_pdf(x, cov, mean):
     Z_theta = math.sqrt(torch.det(2*math.pi*cov))
@@ -108,7 +106,8 @@ def get_samples():
     return training, testing
 
 def main():
-    logging.basicConfig(filename='app.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+    logging.basicConfig(filename='app.log', filemode='w', 
+        format='%(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
     mean = torch.Tensor([1, 1, 1])
     cov = torch.Tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
@@ -118,8 +117,6 @@ def main():
 
     model = SM()
     optimiser = Adam(model.parameters(), lr = 0.75)
-    
-    # print(sliced_J_hat(output, training[0]))
 
     train(model, optimiser, training, testing, cov, mean)
     torch.save(model.state_dict(), 'model/save.txt')
