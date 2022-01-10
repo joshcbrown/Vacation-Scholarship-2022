@@ -78,19 +78,19 @@ def test(model, testing, cov, mean):
     for input in tqdm(testing):
         output = model(input)
         nn_score = keep_grad(output, input)
-        avg_score_diff += abs((nn_score - empirical_score(input, cov, mean)).sum())
-        avg_pdf_diff += abs(output - math.log(empirical_pdf(input, cov, mean)))
+        avg_score_diff += abs((nn_score - theoretical_score(input, cov, mean)).sum())
+        avg_pdf_diff += abs(output - math.log(theoretical_pdf(input, cov, mean)))
     avg_pdf_diff /= len(testing)
     avg_score_diff /= len(testing)
     logging.info(f'pdf diff: {avg_pdf_diff}')
     logging.info(f'score diff: {avg_score_diff}')
 
-def empirical_pdf(x, cov, mean):
+def theoretical_pdf(x, cov, mean):
     Z_theta = math.sqrt(torch.det(2*math.pi*cov))
     q_x = math.exp(-1/2 * torch.matmul(torch.matmul(x-mean, cov), x-mean))
     return q_x / Z_theta
 
-def empirical_score(x, cov, mean):
+def theoretical_score(x, cov, mean):
     return torch.matmul(-cov, (x-mean))
 
 def write_samples(distribution, train_size=10000, test_size=1000):
