@@ -50,7 +50,8 @@ def sliced_J_hat(output, sample):
     return 1/2 * ((eps * score).sum()) ** 2 + trace
 
 def keep_grad(output, input, grad_outputs=None):
-    return torch.autograd.grad(output, input, grad_outputs=grad_outputs, retain_graph=True, create_graph=True)[0]
+    return torch.autograd.grad(output, input, grad_outputs=grad_outputs, 
+            retain_graph=True, create_graph=True)[0]
 
 
 def train(model, optimiser, training, testing, cov, mean, n_epoch=5):
@@ -64,7 +65,7 @@ def train(model, optimiser, training, testing, cov, mean, n_epoch=5):
             loss += sliced_J_hat(output[0], input)
         loss /= len(training)
 
-        logging.info(f'loss: {loss}')
+        logging.info(f'loss {epoch}: {loss}')
         loss.backward()
         optimiser.step()
 
