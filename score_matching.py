@@ -8,7 +8,8 @@ from collections import defaultdict as dd
 from torch import nn
 from torch.autograd import grad
 from torch.optim import Adam
-from torch.distributions.multivariate_normal import MultivariateNormal
+from torch.utils.data import DataLoader
+from data_structures import MultivariateDataset
 
 
 class SM(nn.Module):
@@ -44,7 +45,7 @@ def approx_jacobian_trace(fx, x):
     eps_dfdx = keep_grad(fx, x, grad_outputs=eps)
     tr_dfdx = (eps_dfdx * eps).sum(-1)
 
-    return tr_dfdx, eps
+    return tr_dfdx
 
 def sliced_J_hat(output, sample):
     score = keep_grad(output, sample)
@@ -56,22 +57,24 @@ def keep_grad(output, input, grad_outputs=None):
             retain_graph=True, create_graph=True)[0]
 
 
-def train(model, optimiser, training, testing, cov, mean, n_epoch=10):
-    training.requires_grad = True
+def train(model, optimiser, training_dl, testing_data, cov, mean, n_epoch=100):
     for epoch in tqdm(range(n_epoch)):
-        optimiser.zero_grad()
-        loss = 0
+        for i_batch, x in enumerate(training_dl):
+            optimiser.zero_grad()
+            x.requires_grad_()
 
-        for input in tqdm(training):
-            output = model(input)
-            loss += sliced_J_hat(output, input)
-        loss /= len(training)
+            log_qtilde = model(x)
+            sq = keep_grad(log_qtilde.sum(), x)
 
-        loss.backward()
-        optimiser.step()
-
-        pdf_diff, score_diff = test(model, testing, cov, mean, epoch, True)
-        logging.info(f'EPOCH {epoch}:\nloss {loss}\navg pdf diff: {pdf_diff}\navg score diff: {score_diff}')
+            trH = approx_jacobian_trace(sq, x)
+            norm_s = (sq * sq).sum(1)
+            loss = (trH + .5 * norm_s).mean()
+            loss.backward()
+            optimiser.step()
+        pdf_diff, score_diff = test(model, testing_data, cov, mean, epoch, False)
+        logging.info(f'EPOCH {epoch}\n'
+                     f'loss {loss}\navg pdf diff: {pdf_diff}\n'
+                     f'avg score diff: {score_diff}')
             
 def test(model, testing, cov, mean, epoch, record: bool = False):
     '''compute avg distance between h(x;theta) and empirical log pdf function'''
@@ -125,14 +128,15 @@ def main():
 
     mean = torch.Tensor([0, 0])
     cov = torch.Tensor([[1, 0], [0, 1]])
-    distr = MultivariateNormal(loc=mean, covariance_matrix=cov)
-    write_samples(distr)
-    training, testing = get_samples()
+    training_data = MultivariateDataset(mean, cov, 10000, 'data/testing.txt')
+    testing_data = MultivariateDataset(mean, cov, 1000, 'data/testing.txt')
+
+    training_dl = DataLoader(training_data, batch_size=100, shuffle=True)
 
     model = SM()
-    optimiser = Adam(model.parameters(), lr = 0.75)
+    optimiser = Adam(model.parameters(), lr = 0.5)
 
-    train(model, optimiser, training, testing, cov, mean)
+    train(model, optimiser, training_dl, testing_data, cov, mean)
 
 if __name__ == '__main__':
     main()
