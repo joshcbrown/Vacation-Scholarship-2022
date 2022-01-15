@@ -1,7 +1,10 @@
+import torch
+import math
+import numpy as np
 from torch.utils.data import Dataset
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch import Tensor
-import numpy as np
+
 
 class MultivariateDataset(Dataset):
     def __init__(self, loc: Tensor, cov: Tensor, length: int, file_out: str = None):
@@ -16,6 +19,14 @@ class MultivariateDataset(Dataset):
 
     def __getitem__(self, index: int):
         return self.sample[index]
+
+def theoretical_pdf(x, cov, mean):
+    Z_theta = math.sqrt(torch.det(2*math.pi*cov))
+    q_x = math.exp(-1/2 * torch.matmul(torch.matmul(x-mean, cov), x-mean))
+    return q_x / Z_theta
+
+def theoretical_score(x, cov, mean):
+    return torch.matmul(-cov, (x-mean))
 
 if __name__ == '__main__':
     # debugging
