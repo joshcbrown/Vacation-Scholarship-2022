@@ -26,7 +26,6 @@ class SM(nn.Module):
             nn.Linear(30, 30),
             nn.ReLU(),
             nn.Linear(30, 1),
-            nn.ReLU()
         )
 
     def forward(self, x):

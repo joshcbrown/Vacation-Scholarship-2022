@@ -26,7 +26,6 @@ class SSM(nn.Module):
             nn.Linear(30, 30),
             nn.ReLU(),
             nn.Linear(30, n_inputs),
-            nn.ReLU()
         )
 
     def forward(self, x):
