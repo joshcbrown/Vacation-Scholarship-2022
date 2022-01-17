@@ -14,10 +14,10 @@ from argparse import ArgumentParser
 
 
 class SM(nn.Module):
-    def __init__(self, n_inputs):
+    def __init__(self, args):
         super(SM, self).__init__()
         self.network = nn.Sequential(
-            nn.Linear(n_inputs, 30),
+            nn.Linear(args.n_inputs, 30),
             nn.ReLU(),
             nn.Linear(30, 30),
             nn.ReLU(),
@@ -25,7 +25,7 @@ class SM(nn.Module):
             nn.ReLU(),
             nn.Linear(30, 30),
             nn.ReLU(),
-            nn.Linear(30, 1),
+            nn.Linear(30, args.n_inputs if args.mode == 'score' else 1),
         )
 
     def forward(self, x):
@@ -47,43 +47,59 @@ def train(model, optimiser, training_dl, testing_data, cov, mean, args: Argument
             optimiser.zero_grad()
             x.requires_grad_()
 
-            log_qtilde = model(x)
-            sq = keep_grad(log_qtilde.sum(), x)
+            if args.mode == 'density':
+                log_qtilde = model(x)
+                sq = keep_grad(log_qtilde.sum(), x)
+                trH = approx_jacobian_trace(sq, x)
 
-            trH = approx_jacobian_trace(sq, x)
+            elif args.mode == 'score':
+                sq = model(x)
+                trH = approx_jacobian_trace(sq, x)
+                
             norm_s = (sq * sq).sum(1)
             loss = (trH + .5 * norm_s).mean()
 
             loss.backward()
             optimiser.step()
 
-        pdf_diff, score_diff = test(model, testing_data, cov, mean, epoch, args.record_results)
+        pdf_diff, score_diff = test(model, testing_data, cov, mean, epoch, args)
         logging.info(f'EPOCH {epoch}\n'
                      f'loss: {loss}\navg pdf diff: {pdf_diff}\n'
                      f'avg score diff: {score_diff}')
 
-def test(model, testing, cov, mean, epoch, record: bool = False):
+def test(model, testing, cov, mean, epoch, args: ArgumentParser):
     '''compute avg distance between h(x;theta) and empirical log pdf function'''
     avg_pdf_diff = 0
     avg_score_diff = 0
     results_dict = dd(list)
     for input in tqdm(testing):
-        output = model(input)
-        nn_score = keep_grad(output, input)
+        if args.mode == 'score':
+            nn_score = model(input)
+        elif args.mode == 'density':
+            output = model(input)
+            nn_score = keep_grad(output, input)
+
         score_diff = abs((nn_score - theoretical_score(input, cov, mean)).sum())
-        pdf_diff = abs(output - math.log(theoretical_pdf(input, cov, mean)))[0]
         avg_score_diff += score_diff
-        avg_pdf_diff += pdf_diff
-        if record:
+
+        if args.mode == 'density':
+            pdf_diff = abs(output - math.log(theoretical_pdf(input, cov, mean)))[0]
+            avg_pdf_diff += pdf_diff
+
+        if args.record_results:
             results_dict['data_x'].append(input[0].item())
             results_dict['data_y'].append(input[1].item())
             results_dict['score_diff'].append(score_diff.item())
-            results_dict['pdf_diff'].append(pdf_diff.item())
-    avg_pdf_diff /= len(testing)
+            if args.mode == 'density':
+                results_dict['pdf_diff'].append(pdf_diff.item())
+
+    if args.mode == 'density':
+        avg_pdf_diff /= len(testing)
     avg_score_diff /= len(testing)
-    if record:
+
+    if args.record_results:
         df = pd.DataFrame.from_dict(results_dict)
-        df.to_csv(f'outputs/{epoch}.csv', index=False)
+        df.to_csv(f'outputs/{args.mode}/{epoch}.csv', index=False)
 
     return avg_pdf_diff, avg_score_diff
 
@@ -92,6 +108,8 @@ def main():
         format='%(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
     parser = ArgumentParser()
+    parser.add_argument("-m", "--mode", type=str, choices=["density", "score"], 
+                        default="density", help="what the neural net will approximate")
     parser.add_argument("-n", "--n-inputs", type=int, default=2, 
                         help="number of inputs to model pdf")
     parser.add_argument("-tr", "--n-training", type=int, default=10000, 
@@ -115,8 +133,8 @@ def main():
 
     training_dl = DataLoader(training_data, batch_size=args.batch_size, shuffle=True)
 
-    model = SM(args.n_inputs)
-    optimiser = Adam(model.parameters(), lr = 0.5)
+    model = SM(args)
+    optimiser = Adam(model.parameters(), lr = 0.001)
 
     train(model, optimiser, training_dl, testing_data, cov, mean, args)
 
