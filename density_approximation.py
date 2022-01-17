@@ -63,9 +63,12 @@ def train(model, optimiser, training_dl, testing_data, cov, mean, args: Argument
             optimiser.step()
 
         pdf_diff, score_diff = test(model, testing_data, cov, mean, epoch, args)
-        logging.info(f'EPOCH {epoch}\n'
-                     f'loss: {loss}\navg pdf diff: {pdf_diff}\n'
-                     f'avg score diff: {score_diff}')
+        if args.mode == 'density':
+            logging.info(f'EPOCH {epoch}\n'
+                        f'loss: {loss}\navg pdf diff: {pdf_diff}\n'
+                        f'avg score diff: {score_diff}')
+        elif args.mode == 'score':
+            logging.info(f'EPOCH {epoch}:\nloss: {loss}\navg score diff: {score_diff}')
 
 def test(model, testing, cov, mean, epoch, args: ArgumentParser):
     '''compute avg distance between h(x;theta) and empirical log pdf function'''
