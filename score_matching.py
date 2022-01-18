@@ -9,7 +9,7 @@ from torch import nn
 from torch.autograd import grad
 from torch.optim import Adam
 from torch.utils.data import DataLoader
-from data_structures import MultivariateDataset, theoretical_pdf, theoretical_score
+from data_structures import MultivariateDataset, theoretical_pdf, theoretical_score, Swish
 from argparse import ArgumentParser
 
 
@@ -18,13 +18,13 @@ class SM(nn.Module):
         super(SM, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(args.n_inputs, args.hidden_nodes),
-            nn.ReLU(),
+            Swish(),
             nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            nn.ReLU(),
+            Swish(),
             nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            nn.ReLU(),
+            Swish(),
             nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            nn.ReLU(),
+            Swish(),
             nn.Linear(args.hidden_nodes, args.n_inputs if args.mode == 'score' else 1),
         )
 
@@ -139,7 +139,7 @@ def main():
     training_dl = DataLoader(training_data, batch_size=args.batch_size, shuffle=True)
 
     model = SM(args)
-    optimiser = Adam(model.parameters(), lr = 0.001)
+    optimiser = Adam(model.parameters(), lr = 0.0001)
 
     train(model, optimiser, training_dl, testing_data, cov, mean, args)
 
