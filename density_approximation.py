@@ -17,15 +17,15 @@ class SM(nn.Module):
     def __init__(self, args):
         super(SM, self).__init__()
         self.network = nn.Sequential(
-            nn.Linear(args.n_inputs, 30),
+            nn.Linear(args.n_inputs, args.hidden_nodes),
             nn.ReLU(),
-            nn.Linear(30, 30),
+            nn.Linear(args.hidden_nodes, args.hidden_nodes),
             nn.ReLU(),
-            nn.Linear(30, 30),
+            nn.Linear(args.hidden_nodes, args.hidden_nodes),
             nn.ReLU(),
-            nn.Linear(30, 30),
+            nn.Linear(args.hidden_nodes, args.hidden_nodes),
             nn.ReLU(),
-            nn.Linear(30, args.n_inputs if args.mode == 'score' else 1),
+            nn.Linear(args.hidden_nodes, args.n_inputs if args.mode == 'score' else 1),
         )
 
     def forward(self, x):
@@ -113,6 +113,8 @@ def main():
     parser = ArgumentParser()
     parser.add_argument("-m", "--mode", type=str, choices=["density", "score"], 
                         default="density", help="what the neural net will approximate")
+    parser.add_argument("-hn", "--hidden-nodes", type=int, default=30, 
+                        help="number of hidden nodes in each hidden layer")
     parser.add_argument("-n", "--n-inputs", type=int, default=2, 
                         help="number of inputs to model pdf")
     parser.add_argument("-tr", "--n-training", type=int, default=10000, 
