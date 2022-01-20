@@ -1,7 +1,6 @@
 import torch
 import logging
 import numpy as np
-import math
 import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict as dd
@@ -16,6 +15,8 @@ from argparse import ArgumentParser
 class SM(nn.Module):
     def __init__(self, args):
         super(SM, self).__init__()
+        # investigate default swish implementation in pytorch, and visualisations in pytorch
+        # add argparse argument for the activation function
         self.network = nn.Sequential(
             nn.Linear(args.dim_x, args.hidden_nodes),
             Swish(),
@@ -31,17 +32,21 @@ class SM(nn.Module):
     def forward(self, x):
         return self.network(x)
 
+# following two functions from 'Learning the Stein Discrepancy
+# for Training and Evaluating Energy-Based Models without Sampling'
 def keep_grad(output, input, grad_outputs=None):
     return grad(output, input, grad_outputs=grad_outputs, 
             retain_graph=True, create_graph=True)[0]
     
 def approx_jacobian_trace(fx, x):
+    # TODO: add more epsilons, record results
     eps = torch.randn_like(fx)
     eps_dfdx = keep_grad(fx, x, grad_outputs=eps)
     tr_dfdx = (eps_dfdx * eps).sum(-1)
     return tr_dfdx
 
 def train(model, optimiser, training_dl, testing_data, distribution, args: ArgumentParser):
+    # keep track of score diff in training set as well
     for epoch in tqdm(range(args.n_epoch)):
         for i_batch, x in enumerate(training_dl):
             optimiser.zero_grad()
@@ -63,17 +68,15 @@ def train(model, optimiser, training_dl, testing_data, distribution, args: Argum
             optimiser.step()
 
         if epoch % args.log_frequency == 0:
-            pdf_diff, score_diff = test(model, testing_data, distribution, epoch, args)
-            if args.mode == 'density':
-                logging.info(f'EPOCH {epoch}\n'
-                            f'loss: {loss}\navg' # pdf diff: {pdf_diff}\n'
-                            f'avg score diff: {score_diff}')
-            elif args.mode == 'score':
-                logging.info(f'EPOCH {epoch}:\nloss: {loss}\navg score diff: {score_diff}')
+            score_diff = test(model, testing_data, distribution, epoch, args)
+            logging.info(f'EPOCH {epoch}\n'
+                        f'loss: {loss}\n'
+                        f'avg score diff: {score_diff}')
 
 def test(model, testing, distribution, epoch, args: ArgumentParser):
     '''compute avg distance between h(x;theta) and empirical log pdf function'''
-    avg_pdf_diff = 0
+    # implement tetsing loss, look into graphics with pytorch
+    # implement dataloader for testing as well - careful to make sure avg is correct, constants
     avg_score_diff = 0
     results_dict = dd(list)
     for input in tqdm(testing):
@@ -86,30 +89,20 @@ def test(model, testing, distribution, epoch, args: ArgumentParser):
         score_diff = abs((nn_score - distribution.score_function(input)).sum())
         avg_score_diff += score_diff
 
-        if args.mode == 'density':
-            # not actually a helpful metric since normalising constant is probably wrong?
-            # pdf_diff = abs(np.exp(output.detach()) - math.log(distribution.pdf(input)))[0]
-            # avg_pdf_diff += pdf_diff
-            pass
-
         if args.record_results:
-            results_dict['data_x'].append(input[0].item())
-            results_dict['data_y'].append(input[1].item())
+            results_dict['data_x1'].append(input[0].item())
+            results_dict['data_x2'].append(input[1].item())
             results_dict['score_diff'].append(score_diff.item())
             if args.mode == 'density':
-                # results_dict['pdf_diff'].append(pdf_diff.item())
                 results_dict['log_q'].append(output.item())
 
-    if args.mode == 'density':
-        # avg_pdf_diff /= len(testing)
-        pass
     avg_score_diff /= len(testing)
 
     if args.record_results:
         df = pd.DataFrame.from_dict(results_dict)
         df.to_csv(f'outputs/{args.mode}/{epoch}.csv', index=False)
 
-    return avg_pdf_diff, avg_score_diff
+    return avg_score_diff
 
 def main():
     logging.basicConfig(filename='app.log', filemode='w', 
@@ -137,14 +130,14 @@ def main():
     parser.add_argument("-r", "--record-results", action="store_true", default=False, 
                         help="record the results of each epoch in outputs/")
     parser.add_argument("-lf", "--log-frequency", type=int, default=2,
-                        help="the amount of epochs between each log")    
+                        help="the number of epochs between each log")    
 
     args = parser.parse_args()
 
 
     if args.density_model == 'normal':
-        mean = torch.Tensor([0, 0])
-        cov = torch.Tensor([[1, 0], [0, 1]])
+        mean = torch.zeros(args.dim_x)
+        cov = torch.eye(args.dim_x)
 
         distribution = MultivariateNormal2(mean, cov)
 
@@ -169,3 +162,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# take the training sample, fit kde, compare avg score diff with that of the model
+# try with 2-dimensional x, vary h and plot with existing function

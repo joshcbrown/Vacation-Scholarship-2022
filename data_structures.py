@@ -40,12 +40,13 @@ class MultivariateDataset(Dataset):
     def __getitem__(self, index: int):
         return self.sample[index]
 
+
+# code from 'Learning the Stein Discrepancy
+# for Training and Evaluating Energy-Based Models without Sampling'
 def randb(size):
     dist = distributions.Bernoulli(probs=(.5 * torch.ones(*size)))
     return dist.sample().float()
 
-# code from 'Learning the Stein Discrepancy
-# for Training and Evaluating Energy-Based Models without Sampling'
 class GaussianBernoulliRBM(nn.Module):
     def __init__(self, B, b, c, burn_in=2000):
         super(GaussianBernoulliRBM, self).__init__()
@@ -123,7 +124,6 @@ class Swish(nn.Module):
             return x * torch.sigmoid(self.beta[None, :] * x)
         else:
             return x * torch.sigmoid(self.beta[None, :, None, None] * x)
-
 
 
 if __name__ == '__main__':
