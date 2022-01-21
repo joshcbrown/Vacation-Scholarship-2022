@@ -22,9 +22,12 @@ class MultivariateNormal2(MultivariateNormal):
         return q_x / Z_theta
 
     def score_function(self, x):
-        mean = self.loc
-        cov = self.cov
-        return torch.matmul(-cov, (x-mean))
+        return -self.cov @ (x - self.mean)
+
+    def score_function_vector(self, x):
+        """equivalent to score_function, but instead computes for a vector of points
+        rather than a single point"""
+        return (-self.cov @ (x - self.mean).transpose(0, 1)).transpose(0, 1)
 
 class MultivariateDataset(Dataset):
     def __init__(self, distribution: MultivariateNormal2, length: int, file_out: str = None):
@@ -112,23 +115,7 @@ class GBRMBDataset(Dataset):
     def __getitem__(self, index: int):
         return self.sample[index]
 
-class Swish(nn.Module):
-    def __init__(self, dim=-1):
-        super(Swish, self).__init__()
-        if dim > 0:
-            self.beta = nn.Parameter(torch.ones((dim,)))
-        else:
-            self.beta = torch.ones((1,))
-    def forward(self, x):
-        if len(x.size()) == 2:
-            return x * torch.sigmoid(self.beta[None, :] * x)
-        else:
-            return x * torch.sigmoid(self.beta[None, :, None, None] * x)
-
 
 if __name__ == '__main__':
     # debugging
-    a = torch.randn(5)
-    model = Swish()
-    b = model(a)
-    print(b)
+    pass

@@ -15,38 +15,46 @@ from argparse import ArgumentParser
 class SM(nn.Module):
     def __init__(self, args):
         super(SM, self).__init__()
-        # investigate default swish implementation in pytorch, and visualisations in pytorch
-        # add argparse argument for the activation function
+
+        if args.activation == "ReLU":
+            activation = nn.ReLU
+        elif args.activation == "Swish":
+            activation = nn.SiLU
+            
         self.network = nn.Sequential(
             nn.Linear(args.dim_x, args.hidden_nodes),
-            Swish(),
+            activation(),
             nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            Swish(),
+            activation(),
             nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            Swish(),
+            activation(),
             nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            Swish(),
+            activation(),
             nn.Linear(args.hidden_nodes, args.dim_x if args.mode == 'score' else 1),
         )
 
     def forward(self, x):
         return self.network(x)
 
-# following two functions from 'Learning the Stein Discrepancy
+# following two functions adapted from 'Learning the Stein Discrepancy
 # for Training and Evaluating Energy-Based Models without Sampling'
 def keep_grad(output, input, grad_outputs=None):
     return grad(output, input, grad_outputs=grad_outputs, 
             retain_graph=True, create_graph=True)[0]
     
-def approx_jacobian_trace(fx, x):
-    # TODO: add more epsilons, record results
-    eps = torch.randn_like(fx)
-    eps_dfdx = keep_grad(fx, x, grad_outputs=eps)
-    tr_dfdx = (eps_dfdx * eps).sum(-1)
-    return tr_dfdx
+def approx_jacobian_trace(fx, x, M=1):
+    tr_dfdx = 0
+    for i in range(M):
+        eps = torch.randn_like(fx)
+        eps_dfdx = keep_grad(fx, x, grad_outputs=eps)
+        tr_dfdx += (eps_dfdx * eps).sum(-1)
+    
+    return tr_dfdx / M
+
+def avg_score_diff(observed, theoretical):
+    return ((observed - theoretical) ** 2).sum(1).mean()
 
 def train(model, optimiser, training_dl, testing_data, distribution, args: ArgumentParser):
-    # keep track of score diff in training set as well
     for epoch in tqdm(range(args.n_epoch)):
         for i_batch, x in enumerate(training_dl):
             optimiser.zero_grad()
@@ -55,12 +63,12 @@ def train(model, optimiser, training_dl, testing_data, distribution, args: Argum
             if args.mode == 'density':
                 log_qtilde = model(x)
                 sq = keep_grad(log_qtilde.sum(), x)
-                trH = approx_jacobian_trace(sq, x)
+                trH = approx_jacobian_trace(sq, x, args.n_eps)
 
             elif args.mode == 'score':
                 sq = model(x)
-                trH = approx_jacobian_trace(sq, x)
-                
+                trH = approx_jacobian_trace(sq, x, args.n_eps)
+               
             norm_s = (sq * sq).sum(1)
             loss = (trH + .5 * norm_s).mean()
 
@@ -68,41 +76,48 @@ def train(model, optimiser, training_dl, testing_data, distribution, args: Argum
             optimiser.step()
 
         if epoch % args.log_frequency == 0:
-            score_diff = test(model, testing_data, distribution, epoch, args)
-            logging.info(f'EPOCH {epoch}\n'
-                        f'loss: {loss}\n'
-                        f'avg score diff: {score_diff}')
+            te_loss, te_score_diff = test(model, testing_data, distribution, epoch, args)
+            tr_theoretical_score = distribution.score_function_vector(x)
+            tr_score_diff = avg_score_diff(sq, tr_theoretical_score)
+            test_message = (f'EPOCH {epoch}\n'
+                            f'training loss: {loss}\n'
+                            f'training avg score diff: {tr_score_diff}\n'
+                            f'testing loss: {te_loss}\n'
+                            f'testing avg score diff: {te_score_diff}\n')
+            logging.info(test_message)
+            print(test_message)
+        
+        if args.record_results:
+            torch.save(f'outputs/{args.mode}/{epoch}.pt')
 
 def test(model, testing, distribution, epoch, args: ArgumentParser):
-    '''compute avg distance between h(x;theta) and empirical log pdf function'''
-    # implement tetsing loss, look into graphics with pytorch
-    # implement dataloader for testing as well - careful to make sure avg is correct, constants
-    avg_score_diff = 0
-    results_dict = dd(list)
-    for input in tqdm(testing):
-        if args.mode == 'score':
-            nn_score = model(input)
-        elif args.mode == 'density':
-            output = model(input)
-            nn_score = keep_grad(output, input)
+    model.eval()
+    loss = 0
+    nn_score = torch.Tensor()
+    actual_score = torch.Tensor()
+    for i_batch, x in enumerate(testing):
+        x.requires_grad_()
+        if args.mode == 'density':
+            log_qtilde = model(x)
+            sq = keep_grad(log_qtilde.sum(), x)
+            trH = approx_jacobian_trace(sq, x, args.n_eps)
 
-        score_diff = abs((nn_score - distribution.score_function(input)).sum())
-        avg_score_diff += score_diff
+        elif args.mode == 'score':
+            sq = model(x)
+            trH = approx_jacobian_trace(sq, x, args.n_eps)
+        
+        nn_score = torch.cat((nn_score, sq))
+        actual_score = torch.cat((actual_score, distribution.score_function_vector(x)))
 
-        if args.record_results:
-            results_dict['data_x1'].append(input[0].item())
-            results_dict['data_x2'].append(input[1].item())
-            results_dict['score_diff'].append(score_diff.item())
-            if args.mode == 'density':
-                results_dict['log_q'].append(output.item())
+        norm_s = (sq * sq).sum(1)
+        loss += (trH + .5 * norm_s).mean()
 
-    avg_score_diff /= len(testing)
+    loss /= i_batch + 1
+    score_diff = avg_score_diff(nn_score, actual_score)
 
-    if args.record_results:
-        df = pd.DataFrame.from_dict(results_dict)
-        df.to_csv(f'outputs/{args.mode}/{epoch}.csv', index=False)
+    model.train()
 
-    return avg_score_diff
+    return loss, score_diff
 
 def main():
     logging.basicConfig(filename='app.log', filemode='w', 
@@ -129,8 +144,14 @@ def main():
                         help="number of epochs to run the training loop")
     parser.add_argument("-r", "--record-results", action="store_true", default=False, 
                         help="record the results of each epoch in outputs/")
-    parser.add_argument("-lf", "--log-frequency", type=int, default=2,
-                        help="the number of epochs between each log")    
+    parser.add_argument("-lf", "--log-frequency", type=int, default=1,
+                        help="the number of epochs between each log")
+    parser.add_argument("-s", "--save", action="store_true", default=False,
+                        help="save the model to model.pt")
+    parser.add_argument("-a", "--activation", type=str, choices=["ReLU", "Swish"], 
+                        default="Swish", help="activation function to use on the net")
+    parser.add_argument("-ep", "--n-eps", type=int, default=1, 
+                        help="the number of projection vectors used when approximating trace")
 
     args = parser.parse_args()
 
@@ -154,14 +175,18 @@ def main():
         testing_data = GBRMBDataset(distribution, args.n_testing)
 
     training_dl = DataLoader(training_data, batch_size=args.batch_size, shuffle=True)
+    testing_dl = DataLoader(testing_data, batch_size=args.batch_size, shuffle=True)
 
     model = SM(args)
     optimiser = Adam(model.parameters(), lr = 0.001)
 
-    train(model, optimiser, training_dl, testing_data, distribution, args)
+    train(model, optimiser, training_dl, testing_dl, distribution, args)
+    
+    if args.save:
+        torch.save(model, 'model.pt')
 
 if __name__ == '__main__':
     main()
 
-# take the training sample, fit kde, compare avg score diff with that of the model
+# TODO: take the training sample, fit kde, compare avg score diff with that of the model
 # try with 2-dimensional x, vary h and plot with existing function
