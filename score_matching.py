@@ -10,7 +10,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 from data_structures import *
 from argparse import ArgumentParser
-
+from kde import KernelDensityEstimator
 
 class SM(nn.Module):
     def __init__(self, args):
@@ -152,7 +152,9 @@ def main():
                         default="Swish", help="activation function to use on the net")
     parser.add_argument("-ep", "--n-eps", type=int, default=1, 
                         help="the number of projection vectors used when approximating trace")
-
+    parser.add_argument("-kd", "--compare-kde", action="store_true", default=False, 
+                        help="after training the model, compare avg score diff with" 
+                             "that of a kde estimator")
     args = parser.parse_args()
 
 
@@ -184,6 +186,21 @@ def main():
     
     if args.save:
         torch.save(model, 'model.pt')
+    
+    if args.compare_kde:
+        training_sample = training_data.sample; testing_sample = testing_data.sample
+        training_sample.requires_grad_(); testing_sample.requires_grad_()
+        
+        density_estimate = KernelDensityEstimator(training_sample, bandwidth=0.5)
+        estimates = density_estimate(testing_sample)
+        sq = keep_grad(estimates.sum(), testing_sample)
+
+        sd = distribution.score_function_vector(testing_sample)
+        score_diff = avg_score_diff(sq, sd)
+
+        message = f"kernel density avg score diff: {score_diff}"
+        print(message)
+        logging.info(message)
 
 if __name__ == '__main__':
     main()

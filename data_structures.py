@@ -65,6 +65,9 @@ class GaussianBernoulliRBM(nn.Module):
 
     def score_function(self, x):  # dlogp(x)/dx
         return .5 * torch.tanh(.5 * x @ self.B + self.c) @ self.B.t() + self.b - x
+    
+    def score_function_vector(self, x):
+        return self.score_function(x)
 
     def forward(self, x):  # logp(x)
         B = self.B
