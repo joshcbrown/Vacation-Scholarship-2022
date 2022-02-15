@@ -1,9 +1,6 @@
 import torch
 import logging
-import numpy as np
-import pandas as pd
 from tqdm import tqdm
-from collections import defaultdict as dd
 from torch import nn
 from torch.autograd import grad
 from torch.optim import Adam
@@ -11,30 +8,6 @@ from torch.utils.data import DataLoader
 from data_structures import *
 from argparse import ArgumentParser
 from kde import KernelDensityEstimator
-
-class SM(nn.Module):
-    def __init__(self, args):
-        super(SM, self).__init__()
-
-        if args.activation == "ReLU":
-            activation = nn.ReLU
-        elif args.activation == "Swish":
-            activation = nn.SiLU
-            
-        self.network = nn.Sequential(
-            nn.Linear(args.dim_x, args.hidden_nodes),
-            activation(),
-            nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            activation(),
-            nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            activation(),
-            nn.Linear(args.hidden_nodes, args.hidden_nodes),
-            activation(),
-            nn.Linear(args.hidden_nodes, args.dim_x if args.mode == 'score' else 1),
-        )
-
-    def forward(self, x):
-        return self.network(x)
 
 # following two functions adapted from 'Learning the Stein Discrepancy
 # for Training and Evaluating Energy-Based Models without Sampling'
@@ -44,7 +17,7 @@ def keep_grad(output, input, grad_outputs=None):
     
 def approx_jacobian_trace(fx, x, M=1):
     tr_dfdx = 0
-    for i in range(M):
+    for _ in range(M):
         eps = torch.randn_like(fx)
         eps_dfdx = keep_grad(fx, x, grad_outputs=eps)
         tr_dfdx += (eps_dfdx * eps).sum(-1)
@@ -52,7 +25,11 @@ def approx_jacobian_trace(fx, x, M=1):
     return tr_dfdx / M
 
 def avg_score_diff(observed, theoretical):
-    return ((observed - theoretical) ** 2).sum(1).mean()
+    '''euclidean distance squared between learned score and theoretical score'''
+    return torch.sqrt(((observed - theoretical) ** 2).sum(1)).mean()
+
+def avg_pdf_diff(observed, theoretical):
+    return torch.sqrt((observed - theoretical) ** 2).mean()
 
 def train(model, optimiser, training_dl, testing_data, distribution, args: ArgumentParser):
     for epoch in tqdm(range(args.n_epoch)):
@@ -76,7 +53,7 @@ def train(model, optimiser, training_dl, testing_data, distribution, args: Argum
             optimiser.step()
 
         if epoch % args.log_frequency == 0:
-            te_loss, te_score_diff = test(model, testing_data, distribution, epoch, args)
+            te_loss, te_score_diff = test(model, testing_data, distribution, args)
             tr_theoretical_score = distribution.score_function_vector(x)
             tr_score_diff = avg_score_diff(sq, tr_theoretical_score)
             test_message = (f'EPOCH {epoch}\n'
@@ -87,10 +64,10 @@ def train(model, optimiser, training_dl, testing_data, distribution, args: Argum
             logging.info(test_message)
             print(test_message)
         
-        if args.record_results:
-            torch.save(f'outputs/{args.mode}/{epoch}.pt')
+    if args.save:
+        return te_loss, te_score_diff
 
-def test(model, testing, distribution, epoch, args: ArgumentParser):
+def test(model, testing, distribution, args: ArgumentParser):
     model.eval()
     loss = 0
     nn_score = torch.Tensor()
@@ -130,6 +107,8 @@ def main():
                         default="normal", help="the model which the neural net will approximate")
     parser.add_argument("-hn", "--hidden-nodes", type=int, default=30, 
                         help="number of hidden nodes in each hidden layer")
+    parser.add_argument("-a", "--activation", type=str, choices=["relu", "swish", "tanh", "sigmoid"], 
+                        default="swish", help="activation function to use on the net")
     parser.add_argument("-dx", "--dim-x", type=int, default=2, 
                         help="number of inputs to model pdf")
     parser.add_argument("-dh", "--dim-h", type=int, default=0, 
@@ -142,19 +121,15 @@ def main():
                         help="number of testing samples")
     parser.add_argument("-e", "--n-epoch", type=int, default=100, 
                         help="number of epochs to run the training loop")
-    parser.add_argument("-r", "--record-results", action="store_true", default=False, 
-                        help="record the results of each epoch in outputs/")
     parser.add_argument("-lf", "--log-frequency", type=int, default=1,
                         help="the number of epochs between each log")
     parser.add_argument("-s", "--save", action="store_true", default=False,
                         help="save the model to model.pt")
-    parser.add_argument("-a", "--activation", type=str, choices=["ReLU", "Swish"], 
-                        default="Swish", help="activation function to use on the net")
     parser.add_argument("-ep", "--n-eps", type=int, default=1, 
                         help="the number of projection vectors used when approximating trace")
     parser.add_argument("-kd", "--compare-kde", action="store_true", default=False, 
                         help="after training the model, compare avg score diff with" 
-                             "that of a kde estimator")
+                             "that of a kde")
     args = parser.parse_args()
 
 
@@ -184,26 +159,31 @@ def main():
 
     train(model, optimiser, training_dl, testing_dl, distribution, args)
     
-    if args.save:
-        torch.save(model, 'model.pt')
-    
     if args.compare_kde:
+        # fit kde and compare avg euclidean distance of score from theory
         training_sample = training_data.sample; testing_sample = testing_data.sample
         training_sample.requires_grad_(); testing_sample.requires_grad_()
         
-        density_estimate = KernelDensityEstimator(training_sample, bandwidth=0.5)
+        density_estimate = KernelDensityEstimator(training_sample, dims=args.dim_x)
         estimates = density_estimate(testing_sample)
-        sq = keep_grad(estimates.sum(), testing_sample)
-
+        sq = keep_grad(estimates.log().sum(), testing_sample)
         sd = distribution.score_function_vector(testing_sample)
-        score_diff = avg_score_diff(sq, sd)
 
-        message = f"kernel density avg score diff: {score_diff}"
+        # get rid of nans due to floating point precision
+        idxs = ~torch.any(sq.isnan(), dim=1)
+        sq = sq[idxs]
+        sd = sd[idxs]
+
+        score_diff = avg_score_diff(sq, sd)
+        if args.density_model == 'normal':
+            pdf = distribution.pdf(testing_sample)
+            pdf_diff = avg_pdf_diff(pdf, estimates)
+            message = (f"kernel density\navg score diff: {score_diff}\n"
+                   f"avg pdf diff: {pdf_diff}")
+        else:
+            message = f"kernel density\navg score diff: {score_diff}"
         print(message)
         logging.info(message)
 
 if __name__ == '__main__':
     main()
-
-# TODO: take the training sample, fit kde, compare avg score diff with that of the model
-# try with 2-dimensional x, vary h and plot with existing function

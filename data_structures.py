@@ -1,6 +1,5 @@
 import torch
 import torch.distributions as distributions
-import math
 import numpy as np
 from torch.utils.data import Dataset
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -17,8 +16,8 @@ class MultivariateNormal2(MultivariateNormal):
     def pdf(self, x):
         mean = self.loc
         cov = self.cov
-        Z_theta = math.sqrt(torch.det(2*math.pi*cov))
-        q_x = math.exp(-1/2 * torch.matmul(torch.matmul(x-mean, cov), x-mean))
+        Z_theta = np.sqrt(torch.det(2*np.pi*cov))
+        q_x = (-1/2 * (((x-mean) @ cov) * (x-mean)).sum(1)).exp()
         return q_x / Z_theta
 
     def score_function(self, x):
@@ -106,6 +105,9 @@ class GaussianBernoulliRBM(nn.Module):
         mean = h @ B.t() / 2. + b
         x = torch.randn_like(mean) + mean
         return x, h
+    
+    def pdf(self, x):
+        return self(x)
 
 class GBRMBDataset(Dataset):
     def __init__(self, distribution: GaussianBernoulliRBM, length):
@@ -118,6 +120,34 @@ class GBRMBDataset(Dataset):
     def __getitem__(self, index: int):
         return self.sample[index]
 
+
+class SM(nn.Module):
+    def __init__(self, args):
+        super(SM, self).__init__()
+
+        if args.activation == "relu":
+            activation = nn.ReLU
+        elif args.activation == "swish":
+            activation = nn.SiLU
+        elif args.activation == "tanh":
+            activation = nn.Tanh
+        elif args.activation == "sigmoid":
+            activation = nn.Sigmoid
+        
+        self.network = nn.Sequential(
+            nn.Linear(args.dim_x, args.hidden_nodes),
+            activation(),
+            nn.Linear(args.hidden_nodes, args.hidden_nodes),
+            activation(),
+            nn.Linear(args.hidden_nodes, args.hidden_nodes),
+            activation(),
+            nn.Linear(args.hidden_nodes, args.hidden_nodes),
+            activation(),
+            nn.Linear(args.hidden_nodes, args.dim_x if args.mode == 'score' else 1),
+        )
+
+    def forward(self, x):
+        return self.network(x)
 
 if __name__ == '__main__':
     # debugging
